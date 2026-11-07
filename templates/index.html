@@ -30,8 +30,8 @@
         <!-- Movement (left): X/Y arrows, keyboard, voice and the conveyor -->
         <div class="slider-container">
             <div>
-                <label for="speed-value">Movement Speed: <input type="number" id="speed-value" class="inline-value" min="0" step="any" value="500"> mm/min</label>
-                <span>🐢<input type="range" id="speed-slider" class="snow-leopard-slider" min="100" max="3500" step="100" value="500">🐇</span>
+                <label for="speed-value">Movement Speed: <input type="number" id="speed-value" class="inline-value" min="0" step="any" value="1200"> mm/min</label>
+                <span>🐢<input type="range" id="speed-slider" class="snow-leopard-slider" min="100" max="3500" step="100" value="1200">🐇</span>
             </div>
             <!-- <div>
                 <label for="movement-range">Movement Distance: <span id="range-value">5</span> microns</label>
@@ -106,8 +106,9 @@
                     <div class="syringe-visual" id="syringe-visual">
                         <div class="syringe-plunger">
                             <!-- Rides just above the thumb press. With the Plunger Amount in mm: Y, mm plunged below Set Home;
-                                 in µL: the mL each syringe holds. Editable: type a value and press Enter to move there -->
-                            <span class="syringe-position"><input type="number" id="syringe-position" class="inline-value" step="any" value="0" aria-label="Syringe position"><span id="syringe-position-unit">&nbsp;mm</span></span>
+                                 in µL: the mL each syringe holds. Editable: type a value and press Enter to move there.
+                                 Reads "??" (and can't be typed in) until Set Home, since the page doesn't know where the syringes are -->
+                            <span class="syringe-position"><input type="text" inputmode="decimal" id="syringe-position" class="inline-value" value="??" readonly aria-label="Syringe position"><span id="syringe-position-unit">&nbsp;mm</span></span>
                             <div class="syringe-thumb"></div>
                             <div class="syringe-rod"></div>
                             <div class="syringe-stopper"></div>
@@ -129,13 +130,18 @@
                     <button class="arrow down" onclick="moveSyringes(plungerDistance)">▼</button>
                     <!-- Start volume: after Set Home, picking one plunges the syringes down to it; Reset Syringes comes back to it.
                          Buttons are added by script.js from SYRINGE_PRESETS_ML. Hangs below ▼ without moving the arrows -->
-                    <div id="syringe-preset" class="segmented" role="radiogroup" aria-label="Syringe start volume"></div>
+                    <div id="syringe-preset" class="segmented" role="radiogroup" aria-label="Syringe start volume" style="display: none;"></div> <!-- hidden for now: remove the style to bring the presets back -->
                 </div>
             </div>
         </div>
 
         <!-- Side view of the tiles under the drawn syringe's needle; drawn and lined up by script.js -->
         <div id="tile-strip" data-machines="lali-grbl" style="display: none;" title="Go! starts with tile 1 under the needle"></div>
+        <!-- How many rows (plunge cycles) Go! runs, 1–12; the strip shows that many tiles, and Go!'s travel check and
+             checklist use it too. script.js moves it into the strip, centred under the tiles at home -->
+        <div id="crosslink-rows-field" class="crosslink-rows-field">
+            <label for="crosslink-rows">Rows to Crosslink: <input type="number" id="crosslink-rows" class="inline-value" min="1" max="12" step="1" value="12"></label>
+        </div>
 
 
         <div id="bottom-buttons">
@@ -210,7 +216,7 @@ Syringes</span>
 Conveyor</span>
             </div>
             <div class="labeled-button" data-machines="lali-marlin lali-grbl" style="display: none;">
-                <button id="play-button" class="bottom-button play" title="Prime the syringes and place the first row first. UV on; run 12×: settle, syringe press, advance; advance 11× more through the UV tunnel; UV off">▶</button>
+                <button id="play-button" class="bottom-button play" title="Prime the syringes and place the first row first. UV on; once per Crosslinked Row (12 by default): settle, syringe press, advance; advance 11× more through the UV tunnel; UV off">▶</button>
                 <span class="button-label">Go!</span>
             </div>
             <div class="labeled-button" onclick="emergencyStop()">
@@ -224,9 +230,8 @@ Conveyor</span>
                 <h2 id="go-confirm-title">Start Crosslinking</h2>
                 <p id="go-confirm-text">Ensure you've completed the following:</p>
                 <div class="modal-checklist">
-                    <label><input type="checkbox" class="go-check"> Syringes loaded</label>
-                    <label><input type="checkbox" class="go-check"> Syringes primed</label>
-                    <label><input type="checkbox" class="go-check"> Tray at tile position 1</label>
+                    <label><input type="checkbox" class="go-check"> Syringes Loaded & Primed</label>
+                    <label><input type="checkbox" class="go-check"> <span id="go-check-rows">12 rows</span> on Tray</label>
                     <label><input type="checkbox" class="go-check"> UV Light On</label>
                 </div>
                 <div class="modal-buttons">

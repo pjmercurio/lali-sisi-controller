@@ -633,7 +633,8 @@ body.home-set .syringe-visual {
     width: 100%;
     height: 100%;
     border-radius: 0 0 4px 4px;
-    background: linear-gradient(to right, rgba(255, 255, 255, .65) 0%, rgba(255, 255, 255, .1) 58%, transparent 62%);
+    background: linear-gradient(to right, rgba(255, 255, 255, .6) 0%, rgba(255, 255, 255, .1) 58%, transparent 58%);
+    /* background: linear-gradient(to right, rgba(255, 255, 255, .65) 0%, rgba(255, 255, 255, .1) 58%, transparent 62%); */
 }
 
 /* mL labels beside the barrel, centred on their tick */
@@ -1365,6 +1366,26 @@ body[data-machine="lali-grbl"] #tile-row {
 
 body[data-machine="lali-grbl"].home-set #tile-row {
     cursor: ew-resize; /* only draggable after Set Home */
+}
+
+/* Tiles past Rows to Crosslink aren't drawn (they keep their place, so the numbering and the tunnel don't move) */
+.tile.unused {
+    display: none;
+}
+
+/* Rows to Crosslink: under the tiles at home (left set by script.js), inside the strip so it follows its shift */
+#tile-strip {
+    position: relative;
+}
+
+.crosslink-rows-field {
+    position: absolute;
+    top: 95%;
+    translate: -50% 0;
+    pointer-events: auto; /* the strip ignores the pointer */
+    white-space: nowrap;
+    color: #fff;
+    font-size: 10pt;
 }
 
 #tile-strip svg {

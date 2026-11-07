@@ -50,7 +50,9 @@ MACHINES = {
     'microscope':  {'name': 'Microscope controller', 'firmware': 'marlin', 'bc_axes': False, 'fan_on_at_start': True},
     'sisi':        {'name': 'SiSi Controller',       'firmware': 'grbl',   'bc_axes': False},
     'lali-marlin': {'name': 'LaLi (Marlin)',         'firmware': 'marlin', 'bc_axes': True},
-    'lali-grbl':   {'name': 'LaLi (GRBL)',           'firmware': 'grbl',   'bc_axes': False},  # syringes on Y
+    'lali-grbl':   {'name': 'LaLi (GRBL)',           'firmware': 'grbl',   'bc_axes': False,  # syringes on Y
+                    # Sent on every connect, after the common GRBL setup. $110: conveyor (X) max rate, mm/min
+                    'grbl_settings': ['$110=3000']},
 }
 
 # Known boards by USB ID, and which machine to pre-select when one is found.
@@ -134,8 +136,8 @@ def detect_device():
     
     return None, None
 
-def initialize_grbl(port, name):
-    """Initialize a GRBL board."""
+def initialize_grbl(port, name, settings=()):
+    """Initialize a GRBL board. settings: extra lines for this machine (e.g. '$110=3000'), sent after the common ones."""
     print(f"Initializing {name} (GRBL) on port {port}...")
     global ser
     ser = serial.Serial(port, 115200, timeout=1)
@@ -150,6 +152,9 @@ def initialize_grbl(port, name):
     ser.write(b"$20=0\n"); ser.flush(); wait_for_ok() # soft limits off
     ser.write(b"$21=0\n"); ser.flush(); wait_for_ok() # hard limits off
     ser.write(b"$1=25\n"); ser.flush(); wait_for_ok()  # motors off 25 ms after each move (Go! holds them with $1=255 while it runs)
+    for line in settings:
+        print(f"Sending: {line}")
+        ser.write(f"{line}\n".encode()); ser.flush(); wait_for_ok()
     ser.write(b"G91\n"); ser.flush(); wait_for_ok()   # relative mode
     
     return f"{name} initialized (GRBL)"
@@ -245,7 +250,7 @@ def initialize():
         profile = MACHINES[machine]
 
         if profile['firmware'] == 'grbl':
-            message = initialize_grbl(port, profile['name'])
+            message = initialize_grbl(port, profile['name'], profile.get('grbl_settings', ()))
         else:
             message = initialize_marlin(port, profile['name'], fan_on=profile.get('fan_on_at_start', False))
 

@@ -1,6 +1,6 @@
 const fanSpeed = 255;
 const INCH_TO_MM = 25.4;
-let feedRate = 400;          // Movement Speed: X/Y, keyboard, voice, conveyor
+let feedRate = 1200;         // Movement Speed: X/Y, keyboard, voice, conveyor arrows, drags and Reset Conveyor (not Go!)
 let distance = 50;           // Movement Distance
 let plungerFeedRate = 200;   // Plunger Speed: syringe arrows and the drag-to-position syringe (LaLi)
 let plungerDistance = 0.67;   // Plunger Distance: syringe arrows (LaLi), always in mm; the slider can show it in µL
@@ -42,9 +42,19 @@ const SYRINGE_RETRACT_FEEDRATE = 600;
 // so each cycle should take ~4.1 s. At X/Y acceleration 10 mm/s² and the conveyor at F500, the
 // press takes ~0.8 s, the advance ~2.5 s and the app ~0.2 s per request; these waits make up the rest.
 // Re-time a run if the acceleration, speeds or tunnel change.
+const GO_CONVEYOR_FEEDRATE = 500; // Go!'s conveyor advances (mm/min), whatever the Movement Speed: the UV timing assumes it
 const SYRINGE_WAIT_TIME = 0.1; // seconds to wait after a syringe press before the conveyor moves
 const PRE_PLUNGE_PAUSE_S = 0.5; // settle time before each plunge
-const SEQUENCE_REPEATS = 12;
+const SEQUENCE_REPEATS = 12; // tiles on the tray, and the most rows a Go! run can crosslink
+let crosslinkRows = SEQUENCE_REPEATS; // "Rows to Crosslink" box (LaLi GRBL): plunge cycles in a Go! run, 1 to SEQUENCE_REPEATS
+
+// Shows crosslinkRows tiles in the strip (the rest are hidden, so tile numbers and the tunnel stay put) and
+// in Go!'s checklist ("12 rows on tray")
+function showCrosslinkRows() {
+    document.querySelectorAll('#tile-strip .tile').forEach((tile, i) => tile.classList.toggle('unused', i >= crosslinkRows));
+    const item = document.getElementById('go-check-rows');
+    if (item) item.textContent = `${crosslinkRows} ${crosslinkRows === 1 ? 'row' : 'rows'}`;
+}
 const PRIME_TOTAL_MM = 1;
 const PRIME_GCODE = `
 G1 Y${PRIME_TOTAL_MM} F500
@@ -177,8 +187,9 @@ function syringeMoveGCode(mm, feed) {
     return `G1 B${mm} C${mm} F${feed}`;
 }
 
+// Go!'s conveyor advance, at GO_CONVEYOR_FEEDRATE (not the Movement Speed), so the UV dose doesn't change with the slider
 function conveyorAdvanceGCode(mm) {
-    return `G1 ${CONVEYOR_AXIS}${mm * CONVEYOR_DIRECTION} F${feedRate}`;
+    return `G1 ${CONVEYOR_AXIS}${mm * CONVEYOR_DIRECTION} F${GO_CONVEYOR_FEEDRATE}`;
 }
 
 function syringePressGCode() {
@@ -238,10 +249,13 @@ function showSyringePosition(mm) {
 
 // The number above the syringe, in the Plunger Amount's unit: mm plunged below Set Home (Y), so it reads 0
 // there, or (µL) the mL each syringe holds, read like the barrel scale. Left alone while it's being typed in.
+// Before Set Home it reads "??" and can't be typed in: the page doesn't know where the syringes are yet.
 function showSyringeReadout(mm) {
     const box = document.getElementById('syringe-position');
     const ml = plungerUnit === 'ul';
     document.getElementById('syringe-position-unit').textContent = ml ? '\u00a0mL' : '\u00a0mm';
+    box.readOnly = !homeSet;
+    if (!homeSet) { box.value = '??'; return; }
     if (document.activeElement === box) return;
     const value = Number((ml ? syringeMlForMm(mm) : mm).toFixed(2));
     box.value = value === 0 ? 0 : value;
@@ -254,10 +268,9 @@ function fillSyringeSlider(mm) {
 }
 
 // --- Priming (LaLi GRBL) ---
-// Each Prime adds to primedMm, so Go!'s position check expects the syringes that far below their Start Volume
-// (Go! doesn't need a Prime; the confirm checklist asks instead). A manual pull-up (▲, or
-// dragging the syringe up), Reset Syringes, a Start Volume pick and the end of a Go! run (finished or stopped)
-// reset it.
+// Each Prime adds to primedMm, and a Go! run's presses leave it set too. While it's 0 (not primed), Go!'s travel
+// check adds a Prime to the run's presses. Go! doesn't need a Prime; the confirm checklist asks instead. A manual
+// pull-up (▲, ↑, dragging the syringe up), Reset Syringes, a Start Volume pick and Set Home reset it.
 let primedMm = 0;
 
 function setPrimedMm(mm) {
@@ -265,10 +278,16 @@ function setPrimedMm(mm) {
     updatePlayButton();
 }
 
-// Only LaLi (GRBL) has the presets, so only it waits for one. There, Go! also needs everything
-// where you set it, by the page's running totals: the tray at tile 1 (Set Home's X0) and the syringes exactly at
-// their Start Volume plus what Prime pushed (so any other plunge or pull-up since disables it), with no reset or
-// preset move under way. Called wherever any of those change (also from updateResetButton). Left alone during a run.
+// Syringe travel a Go! run needs: its presses (Crosslinked Rows), plus a Prime first if the syringes
+// haven't been primed since they were last pulled up or reset
+function goTravelMm() {
+    return SYRINGE_PRESS_MM * crosslinkRows + (primedMm > 1e-3 ? 0 : PRIME_TOTAL_MM);
+}
+
+// LaLi (GRBL) only. Go! needs Set Home, the tray at tile 1 (Set Home's X0, by the page's running total), no reset
+// or preset move under way, and room for a full run's presses before the end of travel. The syringes can start
+// anywhere (a custom starting point is fine). Called wherever any of those change (also from updateResetButton).
+// Left alone during a run.
 function updatePlayButton() {
     const playButton = document.getElementById('play-button');
     if (!playButton || playButton.classList.contains('active')) return;
@@ -276,12 +295,14 @@ function updatePlayButton() {
     const lali = currentMachine === 'lali-grbl';
     const reason =
         !lali ? null
-        : homeLost ? 'The board reconnected: press 🏡 Set Home and pick a start volume first'
-        : syringePresetMl === null ? 'Pick a start volume (2.5 or 1.5 mL) first'
+        : homeLost ? 'The board reconnected: press 🏡 Set Home first'
+        : !homeSet ? 'Press 🏡 Set Home first'
         : resetRunning || syringePresetMoving ? 'Wait for the syringes / conveyor to finish moving'
         : Math.abs(conveyorMm) > 1e-3 ? 'The tray isn’t at tile 1: press ↩️ Reset Conveyor first'
-        : Math.abs(syringePosMm - (syringeStartMm() + primedMm)) > 1e-3
-            ? `The syringes have moved from their ${syringePresetMl} mL start: press 💉 Reset Syringes`
+        : syringePosMm + goTravelMm() > SYRINGE_TRAVEL_MM + 1e-3
+            ? (primedMm > 1e-3
+                ? 'Not enough syringe travel left for that many rows: press 💉 Reset Syringes'
+                : 'Not enough syringe travel left for a Prime and that many rows: press 💉 Reset Syringes')
         : null;
     playButton.disabled = reason !== null;
     playButton.title = reason ?? playButton.dataset.title;
@@ -379,11 +400,22 @@ function updateSyringeArrows() {
 
 // Set Home: the syringes are at SYRINGE_HOME_ML right now (holder plate against the stepper) and tile 1 is
 // under the needle, so Y and the conveyor are both 0 (G92 doesn't move anything). The preset is cleared
-// until one is picked again, and the tile strip goes back to home.
-function setSyringeHome() {
+// until one is picked again, and the tile strip goes back to home. Only once the board has taken the G92:
+// if it doesn't get there (no board, an error), nothing changes, including the button's Set Home / Re-Set Home.
+let settingHome = false;
+async function setSyringeHome() {
+    if (settingHome) return;
+    settingHome = true;
+    try {
+        await sendGCodeOrThrow(`G92 ${CONVEYOR_AXIS}0 ${syringeAxesWords(0)}`);
+    } catch (error) {
+        console.error('Set Home failed, so nothing was changed:', error);
+        return;
+    } finally {
+        settingHome = false;
+    }
     setHomeLost(false);
     setHomeSet(true);
-    sendGCode(`G92 ${CONVEYOR_AXIS}0 ${syringeAxesWords(0)}`);
     syringePosMm = 0;
     showSyringePosition(0);
     showSyringePreset(null);
@@ -405,6 +437,7 @@ function setHomeSet(set) {
     document.body.classList.toggle('home-set', set);
     const label = document.getElementById('set-home-label');
     if (label) label.textContent = set ? 'Re-Set Home' : 'Set Home';
+    if (document.getElementById('syringe-position')) showSyringeReadout(syringePosMm); // "??" until Set Home
 }
 
 // Dragging moves to a position on Set Home's coordinates, so it waits for Set Home
@@ -611,9 +644,9 @@ async function runReset() {
 // UV tunnel. Like syringePosMm, it's the page's estimate from the moves it sends: it doesn't see custom
 // G-code, and Stop freezes it wherever the drawing was. Go! puts it back at home when it starts.
 const UV_TUNNEL_MM = SEQUENCE_REPEATS * SEQUENCE_X_STEP_MM; // exactly all 12 tiles
-// The tunnel starts one tile past the tile under the needle, so a tile goes in on the second advance after it's dispensed
-const UV_TUNNEL_START_MM = 1.5 * SEQUENCE_X_STEP_MM;
-const CONVEYOR_MAX_FEED = 500; // $110: GRBL caps faster X moves to this
+// The tunnel starts right at the edge of the tile under the needle (no gap), so a tile goes in on the first advance after it's dispensed
+const UV_TUNNEL_START_MM = 0.5 * SEQUENCE_X_STEP_MM;
+const CONVEYOR_MAX_FEED = 3000; // $110: GRBL caps faster X moves to this (app.py sets it on connect for LaLi GRBL)
 const CONVEYOR_ACCEL = 10; // $120, mm/s²
 const SYRINGE_MAX_FEED = 500; // $111: GRBL caps faster Y (syringe) moves to this
 const SYRINGE_ACCEL = 10; // $121, mm/s²
@@ -886,6 +919,15 @@ function buildTileStrip() {
             <path class="uv-hood" d="M${tunnelX} 37 V21 H${tunnelX + UV_TUNNEL_MM} V37"/>
         </g>
     </svg>`;
+    // Rows to Crosslink sits in the strip (so it follows alignTileStrip's shift), centred under all 12 tiles at
+    // home, like ◀ ▶ above them: as a fraction of the viewBox's -170 to 260 mm
+    const rowsField = document.getElementById('crosslink-rows-field');
+    if (rowsField) {
+        const rowCentre = -(SEQUENCE_REPEATS - 1) / 2 * w; // tile 1 is centred on the needle (x 0)
+        rowsField.style.left = `${(rowCentre + 170) / 430 * 100}%`;
+        strip.appendChild(rowsField);
+    }
+    showCrosslinkRows();
     // The tunnel glows while the UV light is on, however it was switched
     const lightButton = document.getElementById('light-button');
     const showUv = () => strip.classList.toggle('uv-on', lightButton.classList.contains('active'));
@@ -1673,9 +1715,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('sweep-20s')?.addEventListener('click', () => runSweep(20));
 
     // Prime: sends PRIME_GCODE before a Go! run. Ignored during a run, which resets the primed distance when it ends.
+    // After the first Prime that goes through, the button reads 💦 Re-Prime for the rest of the session (until reload)
     const primeLabel = document.getElementById('prime-label');
+    const primeButton = document.getElementById('prime-button');
     let priming = false;
-    document.getElementById('prime-button').addEventListener('click', async () => {
+    let primedThisSession = false;
+    primeButton.addEventListener('click', async () => {
         if (priming || playButton.classList.contains('active')) return;
         if (!syringeMoveInRange(syringePosMm + PRIME_TOTAL_MM) || plungeBlockedByConveyor()) return;
         priming = true;
@@ -1685,11 +1730,13 @@ document.addEventListener('DOMContentLoaded', () => {
             noteSyringeMove(PRIME_TOTAL_MM);
             // No tile mark: priming happens before the tray is put in place, even with the conveyor at tile 1
             setPrimedMm(primedMm + PRIME_TOTAL_MM);
+            primedThisSession = true;
+            primeButton.textContent = '💦';
         } catch (error) {
             console.error('Prime failed:', error);
         } finally {
             priming = false;
-            primeLabel.textContent = 'Prime';
+            primeLabel.textContent = primedThisSession ? 'Re-Prime' : 'Prime';
         }
     });
 
@@ -1753,7 +1800,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return true;
         }
         // All 12 presses have to fit before the syringes' end of travel
-        return !syringeMoveInRange(syringePosMm + SYRINGE_PRESS_MM * SEQUENCE_REPEATS);
+        return !syringeMoveInRange(syringePosMm + goTravelMm());
     }
 
     // Go! asks first, with a checklist that starts unticked every time. Confirm (or Return) is only enabled once
@@ -1819,22 +1866,23 @@ document.addEventListener('DOMContentLoaded', () => {
         // Tile strip timing, from the start of each step's request: the pause, the press, the wait, the advance
         const pressAt = REQUEST_OVERHEAD_S + PRE_PLUNGE_PAUSE_S;
         const pressSeconds = moveSeconds(SYRINGE_PRESS_MM, SYRINGE_PRESS_FEEDRATE, SYRINGE_ACCEL);
+        const goConveyorProfile = { feed: Math.min(GO_CONVEYOR_FEEDRATE, CONVEYOR_MAX_FEED), accel: CONVEYOR_ACCEL };
         const animateCycle = () => {
             noteDispense(pressAt, pressSeconds, SYRINGE_PRESS_MM);
-            noteConveyorMove(SEQUENCE_X_STEP_MM, pressAt + pressSeconds + SYRINGE_WAIT_TIME);
+            noteConveyorMove(SEQUENCE_X_STEP_MM, pressAt + pressSeconds + SYRINGE_WAIT_TIME, goConveyorProfile);
         };
-        const animateUvAdvance = () => noteConveyorMove(SEQUENCE_X_STEP_MM, REQUEST_OVERHEAD_S + UV_ADVANCE_INTERVAL_S);
+        const animateUvAdvance = () => noteConveyorMove(SEQUENCE_X_STEP_MM, REQUEST_OVERHEAD_S + UV_ADVANCE_INTERVAL_S, goConveyorProfile);
 
         const steps = [
             // UV lights go on at the start of the first cycle
-            ...Array.from({ length: SEQUENCE_REPEATS }, (_, i) => i === 0
+            ...Array.from({ length: crosslinkRows }, (_, i) => i === 0
                 ? {
                     gcode: [lightGCode(true), cycle].join('\n'),
-                    label: `Cycle 1 of ${SEQUENCE_REPEATS}`,
+                    label: `Cycle 1 of ${crosslinkRows}`,
                     syringeMm: SYRINGE_PRESS_MM,
                     onStart: () => { lightButton.classList.add('active'); animateCycle(); }
                 }
-                : { gcode: cycle, label: `Cycle ${i + 1} of ${SEQUENCE_REPEATS}`, syringeMm: SYRINGE_PRESS_MM, onStart: animateCycle }
+                : { gcode: cycle, label: `Cycle ${i + 1} of ${crosslinkRows}`, syringeMm: SYRINGE_PRESS_MM, onStart: animateCycle }
             ),
             ...Array.from({ length: UV_ADVANCE_STEPS }, (_, i) => (
                 { gcode: uvAdvance, label: `UV tunnel: advance ${i + 1} of ${UV_ADVANCE_STEPS}`, onStart: animateUvAdvance }
@@ -1855,6 +1903,7 @@ document.addEventListener('DOMContentLoaded', () => {
         playButton.classList.add('active');
         resetTiles(); // the first row is placed under the needle before Go!
         let step = 0;
+        const runStartMm = syringePosMm;
         const runStopCount = stopCount;
         try {
             for (; step < steps.length; step++) {
@@ -1875,7 +1924,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (holdMotors) releaseMotors(stopCount !== runStopCount);
         } finally {
             playButton.classList.remove('active');
-            setPrimedMm(0); // finished or stopped: prime again before the next run
+            // The run's presses leave the syringes primed, finished or not, so the next run's travel check
+            // doesn't add a Prime. (Only a run that stopped before its first press leaves primedMm as it was.)
+            if (syringePosMm > runStartMm + 1e-3) setPrimedMm(Number((syringePosMm - syringeStartMm()).toFixed(4)));
+            else updatePlayButton();
             hideProgressTimer = setTimeout(() => { runProgress.style.display = 'none'; }, 5000);
         }
     });
@@ -1944,6 +1996,21 @@ document.addEventListener('DOMContentLoaded', () => {
         setValue(parseFloat(slider.value));
         box.value = slider.value;
     }
+
+    // Rows to Crosslink: a whole number from 1 to SEQUENCE_REPEATS. Go!'s travel check and run use it as soon as
+    // it's typed; anything else is ignored, and the box shows the value in use again when it loses focus
+    const rowsBox = document.getElementById('crosslink-rows');
+    rowsBox.max = SEQUENCE_REPEATS;
+    rowsBox.value = crosslinkRows;
+    rowsBox.addEventListener('input', () => {
+        const rows = Number(rowsBox.value);
+        if (!Number.isInteger(rows) || rows < 1 || rows > SEQUENCE_REPEATS) return;
+        crosslinkRows = rows;
+        showCrosslinkRows();
+        updatePlayButton();
+    });
+    rowsBox.addEventListener('keydown', event => { if (event.key === 'Enter') rowsBox.blur(); });
+    rowsBox.addEventListener('blur', () => { rowsBox.value = crosslinkRows; });
 
     bindSliderPair(speedSlider, speedValueInput, v => { feedRate = v; }, () => feedRate);
     bindSliderPair(rangeSlider, rangeValueInput, v => { distance = v; }, () => distance);
